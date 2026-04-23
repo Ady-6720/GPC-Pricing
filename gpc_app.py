@@ -7,13 +7,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
 
-# Logic for Render Persistent Disk
-# On Render, if you attach a disk at /data, it stays forever.
-if os.path.exists("/data"):
-    DB_FILE = "/data/rtp_data.db"
-else:
-    DB_FILE = "rtp_data.db"
-
+# Render Persistence Check
+DB_FILE = "/data/rtp_data.db" if os.path.exists("/data") else "rtp_data.db"
 LOCAL_TZ = pytz.timezone("America/New_York")
 
 def init_db():
@@ -48,6 +43,7 @@ def refresh_task():
     if not token: return
     now_local = datetime.now(LOCAL_TZ)
     now_ts = now_local.strftime("%H:%M")
+    
     for offset in [0, -1]:
         fct = fetch_api(token, "GPCDayAhead", offset)
         act = fetch_api(token, "GPCHourAhead", offset)
