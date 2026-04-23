@@ -12,10 +12,12 @@ DB_FILE = "/data/rtp_data.db" if os.path.exists("/data") else "rtp_data.db"
 LOCAL_TZ = pytz.timezone("America/New_York")
 
 def init_db():
+    """Initializes the database and ensures the table exists."""
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS prices 
             (date TEXT, time TEXT, forecast_price REAL, actual_price REAL, 
              last_finalized TEXT, PRIMARY KEY (date, time))''')
+        conn.commit()
 
 def get_security_token():
     url = "https://ws.southernco.com/securityws/nonsecure/coolsecurityns.asmx"
@@ -55,6 +57,7 @@ def refresh_task():
                 for _, r in act.iterrows():
                     if r['Status'] == 'Actual':
                         conn.execute("UPDATE prices SET actual_price = ?, last_finalized = COALESCE(last_finalized, ?) WHERE date = ? AND time = ? AND actual_price IS NULL", (r['Price'], now_ts, r['Date'], r['Time']))
+            conn.commit()
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -143,19 +146,37 @@ def index():
     yest_l = now_l - timedelta(days=1)
     t_str, y_str = now_l.strftime("%m/%d/%Y"), yest_l.strftime("%m/%d/%Y")
     next_update = (now_l + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.row_factory = sqlite3.Row
-        today = conn.execute("SELECT * FROM prices WHERE date=? ORDER BY time ASC", (t_str,)).fetchall()
-        yesterday = conn.execute("SELECT * FROM prices WHERE date=? ORDER BY time ASC", (y_str,)).fetchall()
-        all_p = [r['forecast_price'] for r in today] + [r['actual_price'] for r in today if r['actual_price']]
-        stats = {"high": max(all_p) if all_p else 0, "low": min(all_p) if all_p else 0, "avg": sum(all_p)/len(all_p) if all_p else 0}
-    return render_template_string(HTML_PAGE, today=today, yesterday=yesterday, stats=stats, date_t=t_str, date_y=y_str, ts_last=now_l.strftime("%H:%M:%S"), ts_next=next_update.strftime("%H:%M:%S"), now_hour=now_l.strftime("%H"))
+    
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            conn.row_factory = sqlite3.Row
+            today = conn.execute("SELECT * FROM prices WHERE date=? ORDER BY time ASC", (t_str,)).fetchall()
+            yesterday = conn.execute("SELECT * FROM prices WHERE date=? ORDER BY time ASC", (y_str,)).fetchall()
+            
+            # Emergency refresh if no data yet
+            if len(today) == 0:
+                refresh_task()
+                today = conn.execute("SELECT * FROM prices WHERE date=? ORDER BY time ASC", (t_str,)).fetchall()
+                yesterday = conn.execute("SELECT * FROM prices WHERE date=? ORDER BY time ASC", (y_str,)).fetchall()
+
+            all_p = [r['forecast_price'] for r in today] + [r['actual_price'] for r in today if r['actual_price']]
+            stats = {"high": max(all_p) if all_p else 0, "low": min(all_p) if all_p else 0, "avg": sum(all_p)/len(all_p) if all_p else 0}
+            
+        return render_template_string(HTML_PAGE, today=today, yesterday=yesterday, stats=stats, 
+                                      date_t=t_str, date_y=y_str, ts_last=now_l.strftime("%H:%M:%S"), 
+                                      ts_next=next_update.strftime("%H:%M:%S"), now_hour=now_l.strftime("%H"))
+    except sqlite3.OperationalError:
+        init_db()
+        return "Database initializing... please refresh in 5 seconds."
 
 if __name__ == '__main__':
     init_db()
     scheduler = BackgroundScheduler()
     scheduler.add_job(refresh_task, 'interval', minutes=15)
     scheduler.start()
+    
+    # Run once at startup
     refresh_task()
+    
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
